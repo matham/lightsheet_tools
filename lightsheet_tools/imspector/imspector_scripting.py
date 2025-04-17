@@ -1,14 +1,21 @@
 import pyautogui as pag
 import pyscreeze
 import pygetwindow
-import pyperclip
+import ctypes
 from PIL import Image
 import time
 import datetime
 from pathlib import Path
 from dataclasses import dataclass
-from textwrap import dedent
 from contextlib import contextmanager
+
+X_LEFT_UM = -5592.97
+X_RIGHT_UM = 4415.16
+
+Y_BOTTOM_UM = -4711.17
+Y_TOP_UM = 4995.70
+
+SUBJECT_NAME = "MF1_218M_W"
 
 
 RESOURCE_ROOT = Path(__file__).parent / "resources"
@@ -194,6 +201,10 @@ class ImSpectorOps:
     def run_experiment(
             self, tiler: "SampleTiling", root: str | Path, file_prefix: str, add_data_subdir: bool = True
     ):
+        if ctypes.WinDLL("User32.dll").GetKeyState(0x14):
+            pag.alert("Caps lock is ON. Turn it OFF and run again.", "Capslock is ON")
+            return
+
         msg = f"Name: {file_prefix}_(L/R)\n"
         msg += f"OVERLAP (px): {int(tiler.overlap_x_pixels)} X {int(tiler.overlap_y_pixels)}\n\n"
         msg += f"{tiler}"
@@ -365,39 +376,23 @@ class SampleTiling:
 if __name__ == "__main__":
     ops = ImSpectorOps(window_title="ImSpector - ")
     tiler = SampleTiling(
-        # total magnification of the camera optics. E.g. by default a 1.6x lens results in 3.2x total
         total_mag=3.2,
-        # if using the "Tank", this is the gear ratio of the tank. It is 24 / 50
         y_gear_ratio=24 / 50,
-        # whether the tank is in use or if you're just using the normal basket
         uses_tank=True,
-        # the visible camera area in X. When using an ROI this is less than the default camera size
         num_x_pixels=1621 - 540,
-        # the total number of tiles in X we want to use. This is potentially split across the right and left lightsheet.
-        # E.g. if this is 6 and x_tile_side_split is (3, 3), then there's 3 X tiles used with each lightsheet
         num_x_tiles=6,
-        # the number of Y tiles we want to use
         num_y_tiles=4,
-        # how to split num_x_tiles between the two lightsheets. The two numbers must sum to num_x_tiles. E.g. if this
-        # is (3, 3), then we use 3 X tiles for the left and right sheets. If it's (1, 5), then it'll be 1 tile for the
-        # left and 5 for the right
         x_tile_side_split=(3, 3),
-        # from ImSpector, the X location of the stage when the left end side of the brain is visible
-        x_left_um=-4393.12,
-        # from ImSpector, the X location of the stage when the right end side of the brain is visible
-        x_right_um=5437.50,
-        # from ImSpector, the Y location of the stage when the bottom end side of the brain is visible
-        y_bottom_um=0,
-        # from ImSpector, the Y location of the stage when the top end side of the brain is visible
-        y_top_um=9326.25,
+        x_left_um=X_LEFT_UM,
+        x_right_um=X_RIGHT_UM,
+        y_bottom_um=Y_BOTTOM_UM,
+        y_top_um=Y_TOP_UM,
     )
     try:
         ops.run_experiment(
             tiler,
-            # this should be set to the full path we are auto saving the data
             r"D:\ALL_USER_DATA_HERE\Cleland\autosave",
-            # this is the name of the sample being imaged
-            "MF1_126F_W"
+            SUBJECT_NAME,
         )
     except:
         pag.alert("Recording failed")
