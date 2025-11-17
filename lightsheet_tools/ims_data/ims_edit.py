@@ -6,12 +6,16 @@ import xml.etree.ElementTree as ET
 from xml.etree.ElementTree import Element, ElementTree
 from dataclasses import dataclass
 from copy import deepcopy
+from typing import Literal
 from io import BytesIO
 
 
 @dataclass
 class Color:
     """https://doc.babylonjs.com/features/featuresDeepDive/materials/using/materials_introduction"""
+
+    base_color: tuple[float, float, float] = 0.8, 0., 0.
+    # base color of points in Imaris
 
     ambient_color: tuple[float, float, float] = 0., 0., 0.
 
@@ -52,12 +56,25 @@ class Spots:
 
     color: Color
 
+    style: Literal["center_point", "sphere"] = "sphere"
+
+    radius_scale: float = 1.0
+
+    point_pixel_width: float = 1.0
+
+    displayed: bool = True
+
     def __init__(
             self, name: str, points: np.ndarray | Sequence[tuple[float, float, float]],
-            radius: np.ndarray | Sequence[float] | float, color: Color | None = None, **kwargs
+            radius: np.ndarray | Sequence[float] | float, color: Color | None = None, style: Literal["center_point", "sphere"] = "sphere",
+            radius_scale: float = 1.0, point_pixel_width: float = 1.0, displayed: bool = True, **kwargs,
     ):
         super().__init__(**kwargs)
         self.name = name
+        self.style = style
+        self.radius_scale = radius_scale
+        self.point_pixel_width = point_pixel_width
+        self.displayed = displayed
         self.points = np.asarray(points)
         self.n_points = len(self.points)
         if color is None:
@@ -74,6 +91,14 @@ class Spots:
 
     def __repr__(self):
         return self.__str__()
+
+    @property
+    def ims_style(self) -> str:
+        if self.style == "center_point":
+            return "eCenterPoint"
+        if self.style == "sphere":
+            return "eSphere"
+        raise ValueError(self.style)
 
 
 class ImsFile:
@@ -195,6 +220,13 @@ class ImsFile:
             if "Scene8" in file and "Data" in file["Scene8"]:
                 del file["Scene8"]["Data"]
             self._add_xml_data(file)
+
+    def get_xml_content(self) -> str:
+        with h5py.File(str(self.ims_filename), "r") as file:
+            scene = file["Scene8"]
+            data = scene["Data"]
+            s = data[0]
+        return bytes(s).decode()
 
     def _add_scene(self, file: h5py.File, name: str, points: np.ndarray, radius: np.ndarray):
         if len(points) != len(radius):
@@ -418,6 +450,13 @@ class ImsFile:
         for i, spot in enumerate(self.spots):
             points = deepcopy(self._template_point)
             points.find("bpSurfaceComponent").find("name").text = spot.name
+            points.find("bpSurfaceComponent").find("isHidden").text = "false" if spot.displayed else "true"
+            points.find("bpPointsProperties").set("mStyle", spot.ims_style)
+            points.find("bpPointsProperties").set("mRadiusScale", str(spot.radius_scale))
+            points.find("bpPointsProperties").set("mCenterPointSize", str(spot.point_pixel_width))
+
+            c = spot.color.base_color
+            points.find("bpPointsProperties").set("mBaseColor", f"{c[0]} {c[1]} {c[2]}")
 
             material = points.find("bpSurfaceComponent").find("material")
             material.find("ambientColor").text = spot.color.get_xml_str("ambient")
@@ -448,18 +487,20 @@ class ImsFile:
 
 if __name__ == "__main__":
     ims = ImsFile(
-        ims_filename=Path(r"C:\Users\CPLab\Downloads\ims\Microglia-vasculature_with_objects2_C1_Z000_spots2x.ims")
+        ims_filename=Path(r"C:\Users\CPLab\Downloads\Microglia-vasculature_with_objects2.ims")
     )
     ims.append(Spots(
         name="Cheese",
         points=[(100, 100, 100), (100, 2100, 100), (100, 200, 100)],
-        radius=10,
+        radius=[5, 15, 45],
+        radius_scale=5,
         color=Color(diffuse_color=(0, 1, 0)),
     ))
     ims.append(Spots(
         name="fruit",
         points=[(100, 100, 100), (100, 2100, 100), (100, 200, 100)],
-        radius=22,
+        radius=[5, 15, 45],
+        radius_scale=10,
         color=Color(diffuse_color=(0, 0, 1)),
     ))
 
