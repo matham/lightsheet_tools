@@ -7,6 +7,7 @@ from collections.abc import Sequence
 import datetime
 import glob
 from tqdm import tqdm
+import logging
 import shutil
 from itertools import cycle
 import math
@@ -1088,6 +1089,7 @@ class BigStitcherDataset:
     def _copy_files(
             self, files: list[tuple[Path, Path]], do_copy: bool, do_verify: bool,
             chunk: int = 1024 ** 3 * 10, verification: str = "size", skip_existing: bool = False,
+            overwrite: bool = False, n_retries: int=3, retry_wait: float = 5 * 60.,
     ):
         if do_copy:
             for src, dst in files:
@@ -1095,10 +1097,25 @@ class BigStitcherDataset:
                     if skip_existing:
                         print(f"{now()}\tSkipping existing {src} -> {dst}")
                         continue
-                    raise ValueError(f"{dst} already exists")
+                    if overwrite:
+                        print(f"{now()}\tOverwriting existing {src} -> {dst}")
+                    else:
+                        raise ValueError(f"{dst} already exists")
+
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                print(f"{now()}\tCopying {src} -> {dst}")
-                shutil.copy2(src, dst)
+
+                for i in range(n_retries + 1):
+                    try:
+                        print(f"{now()}\tCopying {src} -> {dst}")
+                        shutil.copy2(src, dst)
+                        break
+                    except OSError as e:
+                        if i == n_retries:
+                            raise
+
+                        logging.exception(e)
+                        print(f"{datetime.datetime.now()}: Trying again {src}")
+                        time.sleep(retry_wait)
 
         if do_verify:
             print("\n\nVerifying files ******************")
@@ -1113,12 +1130,25 @@ class BigStitcherDataset:
                 if verification == "hash":
                     hashes = []
                     for f in (src, dst):
-                        m = hashlib.md5()
-                        with open(f, "rb") as fh:
-                            line = fh.read(chunk)
-                            while line:
-                                m.update(line)
-                                line = fh.read(chunk)
+                        m = None
+
+                        for i in range(n_retries + 1):
+                            try:
+                                m = hashlib.md5()
+                                with open(f, "rb") as fh:
+                                    line = fh.read(chunk)
+                                    while line:
+                                        m.update(line)
+                                        line = fh.read(chunk)
+                                break
+                            except OSError as e:
+                                if i == n_retries:
+                                    raise
+
+                                logging.exception(e)
+                                print(f"{datetime.datetime.now()}: Trying again {f}")
+                                time.sleep(retry_wait)
+
                         hashes.append(m.digest())
 
                     if hashes[0] != hashes[1]:
@@ -1148,7 +1178,7 @@ class BigStitcherDataset:
     @time_me(name="Copying raw data")
     def copy_raw(
             self, dest_root: Path | str, do_copy: bool = False, do_verify: bool = False, verification: str = "size",
-            skip_existing: bool = False
+            skip_existing: bool = False, overwrite: bool = False,
     ):
         dest_root = Path(dest_root)
         files = []
@@ -1160,12 +1190,14 @@ class BigStitcherDataset:
                 )
             )
 
-        self._copy_files(files, do_copy, do_verify, verification=verification, skip_existing=skip_existing)
+        self._copy_files(
+            files, do_copy, do_verify, verification=verification, skip_existing=skip_existing, overwrite=overwrite
+        )
 
     @time_me(name="Copying fused data")
     def copy_fused(
             self, dest_root: Path | str, do_copy: bool = False, do_verify: bool = False, verification: str = "size",
-            skip_existing: bool = False
+            skip_existing: bool = False, overwrite: bool = False,
     ):
         dest_root = Path(dest_root)
         files = []
@@ -1177,19 +1209,23 @@ class BigStitcherDataset:
                 )
             )
 
-        self._copy_files(files, do_copy, do_verify, verification=verification, skip_existing=skip_existing)
+        self._copy_files(
+            files, do_copy, do_verify, verification=verification, skip_existing=skip_existing, overwrite=overwrite
+        )
 
     @time_me(name="Copying ims data")
     def copy_ims(
             self, dest_root: Path | str, do_copy: bool = False, do_verify: bool = False, verification: str = "size",
-            skip_existing: bool = False
+            skip_existing: bool = False, overwrite: bool = False,
     ):
         dest_root = Path(dest_root)
         files = [
             (self.ims_dir / self.ims_name, dest_root / self.dir_name / self.ims_name),
         ]
 
-        self._copy_files(files, do_copy, do_verify, verification=verification, skip_existing=skip_existing)
+        self._copy_files(
+            files, do_copy, do_verify, verification=verification, skip_existing=skip_existing, overwrite=overwrite,
+        )
 
     @time_me(name="Processing datasets")
     @staticmethod
@@ -1219,6 +1255,7 @@ class BigStitcherDataset:
             verify_ims: bool = False,
             verification: str = "size",
             copy_skip_existing: bool = False,
+            copy_overwrite: bool = False,
             empty_input_tiffs: bool = False,
             empty_resaved_tiffs: bool = False,
     ):
@@ -1226,7 +1263,7 @@ class BigStitcherDataset:
             for src_dsets, _ in dataset_pairs:
                 for dset in src_dsets:
                     for item in copy_raw_paths or []:
-                        dset.copy_raw(item, do_copy=True, skip_existing=copy_skip_existing)
+                        dset.copy_raw(item, do_copy=True, skip_existing=copy_skip_existing, overwrite=copy_overwrite)
 
         if verify_raw:
             for src_dsets, _ in dataset_pairs:
@@ -1234,7 +1271,7 @@ class BigStitcherDataset:
                     for item in copy_raw_paths or []:
                         dset.copy_raw(
                             item, do_verify=True, verification=verification, skip_existing=copy_skip_existing,
-                            description="Verifying raw data"
+                            overwrite=copy_overwrite, description="Verifying raw data"
                         )
 
         if fix_src_ome or resave_src:
@@ -1309,12 +1346,12 @@ class BigStitcherDataset:
         if copy_fused:
             for _, dataset in dataset_pairs:
                 for item in copy_fused_paths or []:
-                    dataset.copy_fused(item, do_copy=True, skip_existing=copy_skip_existing)
+                    dataset.copy_fused(item, do_copy=True, skip_existing=copy_skip_existing, overwrite=copy_overwrite)
 
         if copy_ims:
             for _, dataset in dataset_pairs:
                 for item in copy_ims_path or []:
-                    dataset.copy_ims(item, do_copy=True, skip_existing=copy_skip_existing)
+                    dataset.copy_ims(item, do_copy=True, skip_existing=copy_skip_existing, overwrite=copy_overwrite)
 
         if verify_fused:
             for _, dataset in dataset_pairs:
@@ -1413,36 +1450,25 @@ if __name__ == '__main__':
     c2 = [488, 640]
     c3 = [488, 561, 640]
     lavision_datasets = BigStitcherDataset.make_lavision_datasets(
-        names={
-            # "MF1wt_137F_W" : c2,
-            # "MF1_136F_W": c3,
-            # "MF1_145F_W": c3,
-            # "MF1_146M_W": c3,
-            # "MF1_147M_W": c3,
+        # # aws
+        # names={
+        #     "MF1_267F_W": c2,
+        # },
+        # tiff_drive=Path(r"H:\imaging"),
+        # resaved_tiff_drive=Path(r"I:\imaging"),
+        # xml_drive=Path(r"K:\imaging"),
+        # fused_drive=Path(r"H:\imaging"),
+        # ims_drive=Path(r"I:\imaging"),
 
-            # "MF1wt_139M_W": c2,
-            # "MF1wt_148M_W": c2,
-            # "MF1_150F_W": c3,
-            # "MF1_152F_W": c3,
-            # "MF1_153F_W": c3,
-            # "MF1wt_154F_W": c2,
-            # "MF1_155M_W": c3,
-            # "MF1_156M_W": c3,
-            # "MF1_157M_W": c3,
-            # "MF1_158F_W": c3,
+        # # aws
+        # names={
+        # },
+        # tiff_drive=Path(r"L:\imaging"),
+        # resaved_tiff_drive=Path(r"M:\imaging"),
+        # xml_drive=Path(r"N:\imaging"),
+        # fused_drive=Path(r"L:\imaging"),
+        # ims_drive=Path(r"M:\imaging"),
 
-            "MF1wt_159F_W": c2,
-            "MF1_202M_W": c3,
-            "MF1_203M_W": c3,
-            "MF1_207M_W": c3,
-            "MF1_210M_W": c3,
-            "MF1_212F_W": c3,
-        },
-        tiff_drive=Path(r"I:\imaging"),
-        resaved_tiff_drive=Path(r"M:\imaging"),
-        xml_drive=Path(r"N:\imaging"),
-        fused_drive=Path(r"I:\imaging"),
-        ims_drive=Path(r"M:\imaging"),
         per_src_x_tiles=3,
         num_y_tiles=4,
         fiji_path=Path(r'C:\Users\CPLab\Fiji.app'),
@@ -1450,27 +1476,35 @@ if __name__ == '__main__':
         y_translation_gear_factor=1 + 24 / 50,
     )
 
-    BigStitcherDataset.process_datasets(
-        lavision_datasets,
-        copy_raw_paths=[r"T:\BrainClearing\Brain_Images\Raw", r"O:\Yidan\Brains"],
-        # copy_raw=True,
-        verify_raw=True,
-        # verification="hash",
-    )
-
-    BigStitcherDataset.process_datasets(
-        lavision_datasets,
-        fix_src_ome=True,
-        resave_src=True,
-        create_xml=True,
-        set_tile_pos=True,
-        align_channels=True,
-        align_tiles_coarse=True,
-    )
+    # BigStitcherDataset.process_datasets(
+    #     lavision_datasets,
+    #     copy_raw_paths=[r"Z:\2025_ALL_USER_IMAGES_HERE\ClelandThomas\data"],
+    #     verify_raw=True,
+    #     verification="hash",
+    # )
+    # BigStitcherDataset.process_datasets(
+    #     lavision_datasets,
+    #     copy_raw_paths=[r"O:\Yidan\Brains"],
+    #     copy_raw=True,
+    #     verify_raw=True,
+    #     verification="hash",
+    #     copy_skip_existing=False,
+    #     # copy_overwrite=True,
+    # )
+    # BigStitcherDataset.process_datasets(
+    #     lavision_datasets,
+    #     fix_src_ome=True,
+    #     resave_src=True,
+    #     create_xml=True,
+    #     set_tile_pos=True,
+    #     align_channels=True,
+    #     align_tiles_coarse=True,
+    # )
     # BigStitcherDataset.process_datasets(
     #     lavision_datasets,
     #     align_tiles_coarse=True,
     # )
+
     # BigStitcherDataset.process_datasets(
     #     lavision_datasets,
     #     align_tiles_fine=True,
@@ -1490,19 +1524,20 @@ if __name__ == '__main__':
     #     fuse=True,
     #     generate_ims=True,
     # )
-    # BigStitcherDataset.process_datasets(
-    #     lavision_datasets,
-    #     copy_fused_paths=[r"T:\BrainClearing\Brain_Images\Processed\fused", r"Q:\Yidan\Brains"],
-    #     copy_ims_path=[r"T:\BrainClearing\Brain_Images\Processed\ims"],
-    #     copy_fused=True,
-    #     copy_ims=True,
-    #     verify_fused=True,
-    #     verify_ims=True,
-    # )
-    # BigStitcherDataset.process_datasets(
-    #     lavision_datasets,
-    #     copy_fused_paths=[r"Q:\Yidan\Brains"],
-    #     copy_fused=True,
-    #     verify_fused=True,
-    #     verification="hash"
-    # )
+    BigStitcherDataset.process_datasets(
+        lavision_datasets,
+        copy_fused_paths=[r"U:\BrainClearing\Brain_Images\Processed\fused", r"Q:\Yidan\Brains"],
+        copy_ims_path=[r"U:\BrainClearing\Brain_Images\Processed\ims"],
+        copy_fused=True,
+        copy_ims=True,
+        verify_fused=True,
+        verify_ims=True,
+        # copy_overwrite=True,
+        # copy_skip_existing=True,
+    )
+    BigStitcherDataset.process_datasets(
+        lavision_datasets,
+        copy_fused_paths=[r"Q:\Yidan\Brains"],
+        verify_fused=True,
+        verification="hash"
+    )
