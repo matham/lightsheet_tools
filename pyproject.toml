@@ -1,0 +1,41 @@
+[project]
+name = "lightsheet-tools"
+dynamic = ["version"]
+description = "None."
+authors = [
+  {name = "Matthew Einhorn"},
+  {email = "matt@einhorn.dev"},
+]
+
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+]
+
+[project.optional-dependencies]
+ims = [
+    "h5py",
+]
+imspector = [
+    "pyautogui",
+    "pyscreeze",
+    "pygetwindow",
+    "pillow",
+]
+stitch = [
+    "tqdm",
+    "psutil",
+    "tifffile",
+    "ome-types",
+    "xsdata",
+    "pyimagej",
+]
+
+
+[build-system]
+requires = ["setuptools>=42.0.0", "wheel", "setuptools_scm"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+write_to = "lightsheet_tools/_version.py"
+fallback_version = "0.0.1+nogit"
